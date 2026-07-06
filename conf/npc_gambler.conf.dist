@@ -9,9 +9,9 @@
 Gambler.Announce = 1
 
 #
-#   How often does the NPC emote in milliseconds?
-#   Randomly caclulated within range 60000 (1 min, minumum) to 3000000 (5 minutes, max)
-#   Default: 60000 (1 minutes, minimum)
+#   How often the NPC sends passive messages in milliseconds.
+#   Valid range: 60000 (1 minute) to 300000 (5 minutes).
+#   Default: 60000 (1 minute)
 #   Disable: 0
 #
 
@@ -57,8 +57,25 @@ Gambler.Amount5 = 20
 
 #
 #   Jackpot Amount
-#   Only possible if a 100 is rolled in the first 10 consecutive bets
+#   Only possible if a 100 is rolled while the jackpot event is active.
 #       Default: 50
 #
 
 Gambler.Jackpot = 50
+
+#
+#   Random cooldown before the jackpot event becomes active in milliseconds.
+#   The jackpot stays active until a player wins it.
+#       Default Min: 7200000 (2 hours)
+#       Default Max: 14400000 (4 hours)
+#
+
+Gambler.JackpotEvent.CooldownMin = 7200000
+Gambler.JackpotEvent.CooldownMax = 14400000
+
+#
+#   How often the NPC yells that an active jackpot is still available in milliseconds.
+#       Default: 300000 (5 minutes)
+#
+
+Gambler.JackpotEvent.ReminderTimer = 300000

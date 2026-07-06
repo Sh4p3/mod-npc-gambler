@@ -15,8 +15,7 @@ defined in the configuration. It's a nice way for players to make a little extra
     - Set coin type to gamble
 - A roll of 50 or higher wins double the bet!
 - A roll of less than 50 loses double the bet!
-- A roll of 100 within the first 10 rolls hits the jackpot!
-- The jackpot can only be hit in the first 10 rolls of each session to discourage spam.
+- A roll of 100 hits the jackpot while Skinny has announced that the jackpot is active!
 - A little help is given to players losing 5 rolls in a row.
 
 ### To-Do
@@ -72,6 +71,7 @@ This code and content is released under the [GNU AGPL v3](https://github.com/aze
 #include "Config.h"
 #include "Pet.h"
 #include "Player.h"
+#include "Random.h"
 #include "ScriptedCreature.h"
 #include "ScriptedGossip.h"
 #include "ScriptMgr.h"
@@ -91,12 +91,45 @@ uint32 EnableSilver = 1;
 uint32 EnableCopper = 1;
 uint32 GamblerEmoteSpell;
 uint32 GamblerMessageTimer;
+uint32 GamblerJackpotEventCooldownMin = 7200000;
+uint32 GamblerJackpotEventCooldownMax = 14400000;
+uint32 GamblerJackpotEventReminderTimer = 300000;
+bool GamblerJackpotEventActive = false;
+bool GamblerJackpotEventCooldownScheduled = false;
+uint32 GamblerJackpotEventCooldownTimer = 0;
+uint32 GamblerJackpotEventStartedCount = 0;
+uint32 GamblerJackpotEventEndedCount = 0;
+std::string GamblerJackpotEventWinnerName;
+
+void ScheduleGamblerJackpotEventCooldown()
+{
+    GamblerJackpotEventActive = false;
+    GamblerJackpotEventCooldownScheduled = true;
+    GamblerJackpotEventCooldownTimer = urand(GamblerJackpotEventCooldownMin, GamblerJackpotEventCooldownMax);
+}
+
+void StartGamblerJackpotEvent()
+{
+    GamblerJackpotEventActive = true;
+    GamblerJackpotEventCooldownScheduled = false;
+    GamblerJackpotEventCooldownTimer = 0;
+    GamblerJackpotEventWinnerName.clear();
+    ++GamblerJackpotEventStartedCount;
+}
+
+void CompleteGamblerJackpotEvent(std::string const& winnerName)
+{
+    GamblerJackpotEventWinnerName = winnerName;
+    ++GamblerJackpotEventEndedCount;
+    ScheduleGamblerJackpotEventCooldown();
+}
 
 class GamblerConfig : public WorldScript
 {
 public:
     GamblerConfig() : WorldScript("GamblerConfig", {
-        WORLDHOOK_ON_BEFORE_CONFIG_LOAD
+        WORLDHOOK_ON_BEFORE_CONFIG_LOAD,
+        WORLDHOOK_ON_UPDATE
     }) {}
 
     void OnBeforeConfigLoad(bool reload) override
@@ -105,7 +138,25 @@ public:
         {
             // Load Configuration Settings
             SetInitialWorldSettings();
+            ScheduleGamblerJackpotEventCooldown();
         }
+    }
+
+    void OnUpdate(uint32 diff) override
+    {
+        if (GamblerJackpotEventActive)
+            return;
+
+        if (!GamblerJackpotEventCooldownScheduled)
+            ScheduleGamblerJackpotEventCooldown();
+
+        if (GamblerJackpotEventCooldownTimer <= diff)
+        {
+            StartGamblerJackpotEvent();
+            return;
+        }
+
+        GamblerJackpotEventCooldownTimer -= diff;
     }
 
     // Load Configuration Settings
@@ -123,13 +174,19 @@ public:
         EnableGold = sConfigMgr->GetOption<uint32>("Gambler.EnableGold", 1);
         EnableSilver = sConfigMgr->GetOption<uint32>("Gambler.EnableSilver", 1);
         EnableCopper = sConfigMgr->GetOption<uint32>("Gambler.EnableCopper", 1);
-        GamblerEmoteSpell = sConfigMgr->GetOption<uint32>("Gambler.MessageTimer", 44940);
+        GamblerEmoteSpell = sConfigMgr->GetOption<uint32>("Gambler.EmoteSpell", 44940);
         GamblerMessageTimer = sConfigMgr->GetOption<uint32>("Gambler.MessageTimer", 60000);
+        GamblerJackpotEventCooldownMin = sConfigMgr->GetOption<uint32>("Gambler.JackpotEvent.CooldownMin", 7200000);
+        GamblerJackpotEventCooldownMax = sConfigMgr->GetOption<uint32>("Gambler.JackpotEvent.CooldownMax", 14400000);
+        GamblerJackpotEventReminderTimer = sConfigMgr->GetOption<uint32>("Gambler.JackpotEvent.ReminderTimer", 300000);
 
         // Enforce Min/Max Time
         if (GamblerMessageTimer != 0)
             if (GamblerMessageTimer < 60000 || GamblerMessageTimer > 300000)
                 GamblerMessageTimer = 60000;
+
+        if (GamblerJackpotEventCooldownMax < GamblerJackpotEventCooldownMin)
+            GamblerJackpotEventCooldownMax = GamblerJackpotEventCooldownMin;
     }
 };
 
@@ -232,6 +289,11 @@ public:
 
         // Main Menu
         messageJackpot << "Place your bet. Today's Jackpot is " << Jackpot << " " << MoneyTypeText << ".";
+        if (GamblerJackpotEventActive)
+            messageJackpot << " Skinny says the jackpot is active!";
+        else
+            messageJackpot << " Wait for Skinny to announce when it is active.";
+
         messageCoinType << "Coin Type: " << MoneyTypeText;
         AddGossipItemFor(player, GOSSIP_ICON_CHAT, messagePocket.str(), GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 14);
         AddGossipItemFor(player, GOSSIP_ICON_TRAINER, "So, how does this game work?", GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 2);
@@ -284,7 +346,9 @@ public:
 
             // Rules Menu
             case GOSSIP_ACTION_INFO_DEF + 2:
-                messageInstruct << "The rules are simple " << player->GetName() << ".. If you roll higher than 50, you win double the bet amount. Otherwise, you lose twice the bet amount. A roll of 100 wins the jackpot. Good Luck!";
+                messageInstruct << "The rules are simple " << player->GetName() << ".. If you roll higher than 50, "
+                    << "you win double the bet amount. Otherwise, you lose twice the bet amount. A roll of 100 wins "
+                    << "the jackpot only while Skinny says the jackpot is active. Good Luck!";
                 AddGossipItemFor(player, GOSSIP_ICON_CHAT, messageInstruct.str(), GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 14);
                 AddGossipItemFor(player, GOSSIP_ICON_TALK, "Alright Skinny, I'm up for some gambling.", GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
                 player->PlayerTalkClass->SendGossipMenu(1, creature->GetGUID());
@@ -378,14 +442,6 @@ public:
         Roll = urand(1, 100);
         Bets = Bets + 1;
 
-        // The house always wins (discourage spamming for the jackpot)
-        if (Bets >= 10 && Roll == 100)
-        {
-            // If they have bet 10 times this session, decrement their roll
-            // by 1 to prevent a roll of 100 and hitting the jackpot.
-            Roll = Roll - 1;
-        }
-
         // Calculate player money and bet values
         Pocket = CalcMoney(player->GetMoney(), bet);
 
@@ -415,18 +471,19 @@ public:
         }
 
         // Hittin' the jackpot!
-        if (Roll == 100)
+        if (Roll == 100 && GamblerJackpotEventActive)
         {
             std::ostringstream messageAction;
             std::ostringstream messageNotice;
             player->ModifyMoney(JackpotAmount);
+            CompleteGamblerJackpotEvent(player->GetName());
             player->PlayDirectSound(3337);
             player->CastSpell(player, 47292);
             player->CastSpell(player, 44940);
             messageAction << "The bones come to rest with a total roll of " << Roll << ".";
             messageNotice << "WOWZERS " << player->GetName() << "!! You hit the jackpot! Here's your purse of " << Jackpot << " " << MoneyTypeText << "!";
             creature->Whisper(messageAction.str().c_str(), LANG_UNIVERSAL, player);
-            player->GetSession()->SendAreaTriggerMessage("%s", messageNotice.str().c_str());
+            player->GetSession()->SendAreaTriggerMessage("{}", messageNotice.str());
             CloseGossipMenuFor(player);
             creature->HandleEmoteCommand(EMOTE_ONESHOT_APPLAUD);
             return true;
@@ -471,68 +528,112 @@ public:
 
         uint32 Choice;
         uint32 MessageTimer;
+        uint32 JackpotReminderTimer;
+        uint32 LastAnnouncedJackpotStart;
+        uint32 LastAnnouncedJackpotEnd;
 
-        // Called once when client is loaded
-        void Reset()
+        void Reset() override
         {
-            // GamblerMessageTimer Hardcoded - Does Not Use Config Value
-            MessageTimer = urand(60000, 180000); // 1-3 minutes
+            MessageTimer = GamblerMessageTimer;
+            JackpotReminderTimer = GamblerJackpotEventReminderTimer;
+            LastAnnouncedJackpotStart = GamblerJackpotEventActive ? 0 : GamblerJackpotEventStartedCount;
+            LastAnnouncedJackpotEnd = GamblerJackpotEventEndedCount;
         }
 
-        // Called at World update tick
-        void UpdateAI(const uint32 diff)
+        void UpdateAI(uint32 diff) override
         {
+            UpdateJackpotEventAnnouncements(diff);
+
+            if (GamblerMessageTimer == 0)
+                return;
+
             if (MessageTimer <= diff)
             {
-                // If Enabled
-                if (GamblerMessageTimer != 0)
+                // Make a random message choice
+                Choice = urand(1, 3);
+
+                switch (Choice)
                 {
-                    // Make a random message choice
-                    Choice = urand(1, 3);
-
-                    switch (Choice)
+                    case 1:
                     {
-                        case 1:
-                        {
-                            me->Say("Come one, come all! Step right up to Skinny's! Place your bets, Place your bets!", LANG_UNIVERSAL, NULL);
-                            me->HandleEmoteCommand(EMOTE_ONESHOT_EXCLAMATION);
+                        me->Say("Come one, come all! Step right up to Skinny's! Place your bets, Place your bets!", LANG_UNIVERSAL, NULL);
+                        me->HandleEmoteCommand(EMOTE_ONESHOT_EXCLAMATION);
 
-                            if (GamblerEmoteSpell != 0)
-                                me->CastSpell(me, 44940);
+                        if (GamblerEmoteSpell != 0)
+                            me->CastSpell(me, GamblerEmoteSpell);
 
-                            MessageTimer = urand(60000, 180000);
-                            break;
-                        }
-                        case 2:
-                        {
-                            me->Say("Come on! Place your bets, Don't be a chicken!", LANG_UNIVERSAL, NULL);
-                            me->HandleEmoteCommand(EMOTE_ONESHOT_CHICKEN);
-                            MessageTimer = urand(60000, 180000);
-                            break;
-                        }
-                        case 3:
-                        {
-                            me->Say("Don't make me sad, Come and gamble! Step right up and win today!", LANG_UNIVERSAL, NULL);
-                            me->HandleEmoteCommand(EMOTE_ONESHOT_CRY);
-                            MessageTimer = urand(60000, 180000);
-                            break;
-                        }
-                        default:
-                        {
-                            me->Say("Come one, come all!Step right up to Skinny's! Place your bets, Place your bets!", LANG_UNIVERSAL, NULL);
-                            me->HandleEmoteCommand(EMOTE_ONESHOT_EXCLAMATION);
-                            me->CastSpell(me, 44940);
-                            MessageTimer = urand(60000, 180000);
-                            break;
-                        }
+                        break;
+                    }
+                    case 2:
+                    {
+                        me->Say("Come on! Place your bets, Don't be a chicken!", LANG_UNIVERSAL, NULL);
+                        me->HandleEmoteCommand(EMOTE_ONESHOT_CHICKEN);
+                        break;
+                    }
+                    case 3:
+                    {
+                        me->Say("Don't make me sad, Come and gamble! Step right up and win today!", LANG_UNIVERSAL, NULL);
+                        me->HandleEmoteCommand(EMOTE_ONESHOT_CRY);
+                        break;
+                    }
+                    default:
+                    {
+                        me->Say("Come one, come all!Step right up to Skinny's! Place your bets, Place your bets!", LANG_UNIVERSAL, NULL);
+                        me->HandleEmoteCommand(EMOTE_ONESHOT_EXCLAMATION);
+
+                        if (GamblerEmoteSpell != 0)
+                            me->CastSpell(me, GamblerEmoteSpell);
+
+                        break;
                     }
                 }
+
+                MessageTimer = GamblerMessageTimer;
             }
             else
             {
                 MessageTimer -= diff;
             }
         };
+
+        void UpdateJackpotEventAnnouncements(uint32 diff)
+        {
+            if (GamblerJackpotEventActive)
+            {
+                if (LastAnnouncedJackpotStart != GamblerJackpotEventStartedCount)
+                {
+                    me->Yell("The jackpot is active! Roll a 100 and the purse is yours!", LANG_UNIVERSAL, nullptr);
+                    LastAnnouncedJackpotStart = GamblerJackpotEventStartedCount;
+                    JackpotReminderTimer = GamblerJackpotEventReminderTimer;
+                    return;
+                }
+
+                if (GamblerJackpotEventReminderTimer == 0)
+                    return;
+
+                if (JackpotReminderTimer <= diff)
+                {
+                    me->Yell("The jackpot is still active! Roll a 100 before someone else claims it!",
+                        LANG_UNIVERSAL, nullptr);
+                    JackpotReminderTimer = GamblerJackpotEventReminderTimer;
+                }
+                else
+                    JackpotReminderTimer -= diff;
+
+                return;
+            }
+
+            JackpotReminderTimer = GamblerJackpotEventReminderTimer;
+
+            if (LastAnnouncedJackpotEnd == GamblerJackpotEventEndedCount)
+                return;
+
+            std::ostringstream message;
+            message << GamblerJackpotEventWinnerName << " hit the jackpot! "
+                << "The next jackpot starts after I refill the purse.";
+            me->Yell(message.str(), LANG_UNIVERSAL, nullptr);
+            LastAnnouncedJackpotEnd = GamblerJackpotEventEndedCount;
+        }
     };
 
     // CREATURE AI
